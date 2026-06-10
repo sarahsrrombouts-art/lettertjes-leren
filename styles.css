@@ -1,0 +1,188 @@
+/* Lettertjes leren — layout & letter styles */
+@import url("https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Fredoka:wght@500;600;700&family=Quicksand:wght@500;600;700&display=swap");
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-claude-cream);
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+#root { height: 100%; }
+
+.stage {
+  position: fixed;
+  inset: 0;
+  background: var(--color-claude-cream);
+  font-family: var(--kid-font, "Baloo 2"), var(--font-sans);
+  --slide-dur: 360ms;
+  --slide-ease: cubic-bezier(0.2, 0, 0.1, 1);
+  --letter-size: min(42vh, 58vw);
+  --letter-gap: clamp(20px, 5vw, 80px);
+  --edge-pad: clamp(20px, 6vw, 90px);
+}
+
+/* ---------- the scrolling tape ---------- */
+.track-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 var(--edge-pad);
+  overflow: hidden;
+  z-index: 1;
+}
+.track {
+  display: flex;
+  align-items: center;
+  gap: var(--letter-gap);
+  will-change: transform;
+  white-space: nowrap;
+}
+.letter {
+  font-family: inherit;
+  font-weight: 700;
+  font-size: var(--letter-size);
+  line-height: 0.8;
+  display: inline-flex;
+  align-items: center;
+  letter-spacing: -0.02em;
+}
+.letter .pair {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.06em;
+}
+.letter .pair-l { font-size: 0.66em; opacity: 0.78; }
+
+/* ---------- prompt state ---------- */
+.prompt {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(24px, 5vh, 56px);
+  padding: 6vw;
+  text-align: center;
+  transition: opacity var(--slide-dur) var(--slide-ease);
+  pointer-events: none;
+}
+.prompt.hidden { opacity: 0; }
+
+.prompt h1 {
+  font-family: inherit;
+  font-weight: 600;
+  font-size: clamp(28px, 6vw, 72px);
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+  color: var(--color-claude-ink);
+  margin: 0;
+  max-width: 16em;
+  text-wrap: balance;
+}
+
+/* tap-to-listen button */
+.mic-cta {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  border: var(--border-width-thin) solid var(--color-border-primary);
+  background: #fff;
+  color: var(--color-claude-ink);
+  font-family: var(--kid-font, "Baloo 2"), var(--font-sans);
+  font-weight: 600;
+  font-size: clamp(16px, 2.4vw, 22px);
+  padding: 14px 26px 14px 20px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-standard),
+              transform var(--duration-fast) var(--ease-standard);
+}
+.mic-cta:hover { background: var(--color-background-ghost); }
+.mic-cta:active { transform: scale(0.97); }
+.mic-cta svg { width: 26px; height: 26px; }
+
+.cta-hint {
+  font-family: var(--font-sans);
+  font-size: clamp(13px, 1.6vw, 16px);
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+  pointer-events: none;
+}
+
+/* ---------- listening indicator ---------- */
+.listening {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(20px, 4vh, 44px);
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px 9px 13px;
+  border-radius: var(--radius-full);
+  border: var(--border-width-thin) solid var(--color-border-secondary);
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  opacity: 0;
+  transition: opacity var(--duration-medium) var(--ease-standard);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.listening.show { opacity: 1; }
+
+.eq {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+}
+.eq i {
+  display: block;
+  width: 3px;
+  height: 30%;
+  border-radius: 2px;
+  background: var(--color-claude-orange);
+  transform-origin: center;
+  transition: height 80ms ease;
+}
+
+/* denied / no-mic note */
+.note {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(20px, 4vh, 44px);
+  transform: translateX(-50%);
+  z-index: 3;
+  max-width: 80vw;
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  background: rgba(255,255,255,0.75);
+  border: var(--border-width-thin) solid var(--color-border-secondary);
+  border-radius: var(--radius-full);
+  padding: 8px 16px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage { --slide-dur: 1ms; }
+}
