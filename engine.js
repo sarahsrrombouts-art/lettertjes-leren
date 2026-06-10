@@ -243,10 +243,45 @@
     this.speaking = now;
     if (now) {
       this._stopBurst();
-      if (this.currentLetter) this._startRepeat();
+      // in phoneme mode the letter isn't known until inference finishes,
+      // so don't repeat the previous letter while a new sound is made
+      if (this.currentLetter && !this.phonemeMode) this._startRepeat();
     } else {
       this._stopRepeat();
     }
+  };
+
+  /* ---------- phoneme mode (experimental klankmodus) ---------- */
+  Controller.prototype._setupPhoneme = function (stream) {
+    var self = this;
+    this.phonemeEngine = new window.PhonemeEngine({
+      onLevel: this.onLevel,
+      onSpeaking: function (s) { self._onSpeakingChange(s); },
+      onStatus: function (st) { self.onState({ phoneme: st }); },
+      onLetters: function (letters, durS) { self._burstSeq(letters, durS); }
+    });
+    this.phonemeEngine.start(stream).catch(function () {});
+  };
+
+  // play a recognized phoneme sequence onto the tape, one letter per
+  // cadence tick. CTC collapses repeats ("mmmm" → one m), so a single
+  // recognized sound is stretched back to how long it was held.
+  Controller.prototype._burstSeq = function (letters, durS) {
+    var self = this;
+    this._stopBurst();
+    if (letters.length === 1 && durS) {
+      var n = Math.max(1, Math.min(8, Math.round((durS * 1000) / this.getConfig().repeatMs)));
+      letters = new Array(n).fill(letters[0]);
+    }
+    var i = 0;
+    var step = function () {
+      if (i >= letters.length) { self._stopBurst(); return; }
+      self.currentLetter = letters[i++];
+      self.emit();
+    };
+    step();
+    if (i >= letters.length) return;
+    this.burstTimer = setInterval(step, this.getConfig().repeatMs);
   };
 
   Controller.prototype.setLetter = function (c, burstN) {
@@ -310,6 +345,11 @@
       .then(function (stream) {
         self.micOn = true;
         self.onState({ mic: true });
+        if (self.getConfig().phonemeMode && window.PhonemeEngine) {
+          self.phonemeMode = true;
+          self._setupPhoneme(stream);
+          return;
+        }
         var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         var exclusiveMic = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
         if (SR && exclusiveMic) {

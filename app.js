@@ -14,7 +14,8 @@
     "vibrate": true,
     "letterSize": 42,
     "silence": 3,
-    "tempo": 220
+    "tempo": 220,
+    "klankmodus": false
   };
 
   function MicIcon() {
@@ -34,6 +35,7 @@
 
     const [mode, setMode] = useState("prompt");
     const [mic, setMic] = useState("idle"); // idle | on | denied
+    const [phon, setPhon] = useState(null); // klankmodus status
     const centerRef = useRef(null);
     const trackRef = useRef(null);
     const ctrlRef = useRef(null);
@@ -48,7 +50,8 @@
           vibrate: !!c.vibrate,
           vibrateMs: 18,
           silenceMs: (c.silence || 3) * 1000,
-          repeatMs: c.tempo || 220
+          repeatMs: c.tempo || 220,
+          phonemeMode: !!c.klankmodus
         };
       };
       const ctrl = new window.LetterController({
@@ -60,6 +63,7 @@
           if (s.mic === true) setMic("on");
           if (s.recognition === false && !s.denied) setMic("norec");
           if (s.denied) setMic("denied");
+          if (s.phoneme) setPhon(s.phoneme);
         },
         onLevel: (lvl) => {
           const bars = barsRef.current;
@@ -102,14 +106,23 @@
       mic === 'norec' && h('div', { className: 'note' },
         'Spraakherkenning werkt niet in deze browser — typ een letter op het toetsenbord.'
       ),
+      phon && phon.state === 'model-missing' && h('div', { className: 'note' },
+        'Klankmodel niet gevonden — draai eerst de "convert-model" Action op GitHub, of zet de klankmodus uit.'
+      ),
+      phon && phon.state === 'error' && h('div', { className: 'note' },
+        'Klankmodel kon niet laden — zet de klankmodus uit om de gewone herkenning te gebruiken.'
+      ),
 
-      h('div', { className: 'listening' + (mic === 'on' ? ' show' : '') },
+      h('div', { className: 'listening' + (mic === 'on' && (!phon || phon.state === 'ready' || phon.state === 'thinking' || phon.state === 'loading') ? ' show' : '') },
         h('span', { className: 'eq' },
           ...[0, 1, 2, 3, 4].map((i) =>
             h('i', { key: i, ref: (el) => { barsRef.current[i] = el; } })
           )
         ),
-        h('span', null, 'Ik luister…')
+        h('span', null,
+          phon && phon.state === 'loading'
+            ? 'Klankmodel laden… ' + Math.round((phon.progress || 0) * 100) + '%'
+            : phon && phon.state === 'thinking' ? 'Hmm…' : 'Ik luister…')
       ),
 
       h(TweaksPanel, null,
@@ -127,6 +140,8 @@
                         options: ['Elke letter', 'Oranje', 'Inkt'],
                         onChange: (v) => setTweak('colors', v) }),
         h(TweakSection, { label: 'Gedrag' }),
+        h(TweakToggle, { label: 'Klankmodus (experimenteel, voor start)', value: t.klankmodus,
+                         onChange: (v) => setTweak('klankmodus', v) }),
         h(TweakToggle, { label: 'Trillen bij elke letter', value: t.vibrate,
                          onChange: (v) => setTweak('vibrate', v) }),
         h(TweakSlider, { label: 'Tempo (hoe sneller, hoe lager)', value: t.tempo,
