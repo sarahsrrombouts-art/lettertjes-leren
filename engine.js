@@ -24,13 +24,31 @@
   function stripDiacritics(s) {
     return s.normalize ? s.normalize("NFD").replace(/[̀-ͯ]/g, "") : s;
   }
-  function lastLetter(transcript) {
+
+  // Dutch letter names as the recognizer tends to spell them.
+  // "bee" must become b, not e — the recognizer returns words, so map
+  // whole words before falling back to single characters.
+  var NAME_MAP = {
+    aa: "a", ah: "a", bee: "b", be: "b", cee: "c", see: "c", dee: "d", de: "d",
+    ee: "e", eh: "e", ef: "f", gee: "g", ge: "g", ha: "h", haa: "h", ie: "i",
+    jee: "j", je: "j", ka: "k", kaa: "k", el: "l", em: "m", en: "n", oo: "o",
+    oh: "o", pee: "p", pe: "p", ku: "q", kuu: "q", er: "r", es: "s", tee: "t",
+    thee: "t", te: "t", uu: "u", vee: "v", ve: "v", wee: "w", we: "w",
+    iks: "x", ex: "x", ypsilon: "y", zet: "z", hm: "m", hmm: "m", mmm: "m"
+  };
+  function letterFrom(transcript) {
     var t = stripDiacritics(String(transcript || "").toLowerCase());
-    for (var i = t.length - 1; i >= 0; i--) {
-      var c = t[i];
-      if (c >= "a" && c <= "z") return c;
+    var words = t.match(/[a-z]+/g);
+    if (!words || !words.length) return null;
+    var w = words[words.length - 1];
+    if (NAME_MAP[w]) return NAME_MAP[w];
+    if (w.length === 1) return w;
+    var same = true;
+    for (var i = 1; i < w.length; i++) {
+      if (w[i] !== w[0]) { same = false; break; }
     }
-    return null;
+    if (same) return w[0]; // "aaa" → a
+    return w[w.length - 1];
   }
 
   /* ---------- The tape of giant letters ---------- */
@@ -141,6 +159,10 @@
     this.manual = false;
     this.lastEmit = 0;
     this.repeatTimer = null;
+    this.burstTimer = null;
+    this.speechStartT = 0;
+    this.lastSoundEnd = 0;
+    this.lastSoundDur = 0;
     this.running = false;
     this.micOn = false;
     this.mode = "prompt";
@@ -190,8 +212,12 @@
     if (now === this.speaking) return;
     this.speaking = now;
     if (now) {
+      this._stopBurst();
+      this.speechStartT = Date.now();
       if (this.currentLetter) this._startRepeat();
     } else {
+      this.lastSoundEnd = Date.now();
+      this.lastSoundDur = this.lastSoundEnd - this.speechStartT;
       this._stopRepeat();
     }
   };
@@ -200,10 +226,33 @@
     if (!c) return;
     var changed = c !== this.currentLetter;
     this.currentLetter = c;
-    if ((this.speaking || this.manual)) {
+    if (this.speaking || this.manual) {
       if (!this.repeatTimer) this._startRepeat();
       else if (changed) this.emit();
+      return;
     }
+    // Recognition often resolves a short sound only after it ends —
+    // replay the held sound as a quick burst of letters, sized to how
+    // long the sound lasted.
+    if (this.lastSoundEnd && Date.now() - this.lastSoundEnd < 2500) {
+      var cfg = this.getConfig();
+      var n = Math.max(1, Math.min(8, Math.round(this.lastSoundDur / cfg.repeatMs)));
+      this._burst(n, cfg.repeatMs);
+    }
+  };
+
+  Controller.prototype._burst = function (n, ms) {
+    var self = this;
+    this._stopBurst();
+    this.emit();
+    if (--n <= 0) return;
+    this.burstTimer = setInterval(function () {
+      self.emit();
+      if (--n <= 0) self._stopBurst();
+    }, ms);
+  };
+  Controller.prototype._stopBurst = function () {
+    if (this.burstTimer) { clearInterval(this.burstTimer); this.burstTimer = null; }
   };
 
   Controller.prototype._tickSilence = function () {
@@ -234,8 +283,22 @@
       .then(function (stream) {
         self.micOn = true;
         self.onState({ mic: true });
-        self._setupAudio(stream);
-        self._setupRecognition();
+        var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        var exclusiveMic = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+        if (SR && exclusiveMic) {
+          // On mobile the OS hands the mic to one consumer at a time;
+          // holding this stream starves SpeechRecognition and it never
+          // hears anything. Permission is granted now — release the
+          // stream and let recognition own the mic. Speaking state and
+          // the level bars are driven from recognition events instead.
+          stream.getTracks().forEach(function (t) { t.stop(); });
+          self._setupRecognition(true);
+          self._syntheticLevel();
+        } else {
+          self._setupAudio(stream);
+          if (SR) self._setupRecognition(false);
+          else self.onState({ recognition: false });
+        }
       })
       .catch(function (err) {
         self.running = false;
@@ -273,7 +336,7 @@
     loop();
   };
 
-  Controller.prototype._setupRecognition = function () {
+  Controller.prototype._setupRecognition = function (driveSpeaking) {
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { this.onState({ recognition: false }); return; }
     var self = this;
@@ -282,9 +345,20 @@
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
+    if (driveSpeaking) {
+      rec.onspeechstart = function () { self._onSpeakingChange(true); };
+      rec.onspeechend = function () { self._onSpeakingChange(false); };
+      rec.onsoundstart = function () { self._onSpeakingChange(true); };
+      rec.onsoundend = function () { self._onSpeakingChange(false); };
+    }
     rec.onresult = function (e) {
       var res = e.results[e.results.length - 1];
-      var c = lastLetter(res[0].transcript);
+      // an interim result mid-utterance means the user is still talking,
+      // even if onspeechstart never fired (support varies per platform);
+      // a final result is often delivered after the sound ended and
+      // should go through the burst path instead
+      if (driveSpeaking && !res.isFinal) self._pokeSpeaking();
+      var c = letterFrom(res[0].transcript);
       if (c) self.setLetter(c);
     };
     rec.onerror = function (e) {
@@ -293,12 +367,35 @@
       }
     };
     rec.onend = function () {
+      if (driveSpeaking) self._onSpeakingChange(false);
+      // mobile recognition sessions end on their own; restart with a
+      // short pause so a failing start doesn't spin
       if (self.running && self.micOn) {
-        try { rec.start(); } catch (e) {}
+        setTimeout(function () { try { rec.start(); } catch (e) {} }, 200);
       }
     };
     this.recognition = rec;
     try { rec.start(); this.onState({ recognition: true }); } catch (e) {}
+  };
+
+  // interim results arriving = still talking; quiet for ~900ms = stopped
+  Controller.prototype._pokeSpeaking = function () {
+    var self = this;
+    this._onSpeakingChange(true);
+    clearTimeout(this._pokeT);
+    this._pokeT = setTimeout(function () { self._onSpeakingChange(false); }, 900);
+  };
+
+  // without a live audio stream there is no level meter — pulse the
+  // bars while recognition reports speech so the UI still feels alive
+  Controller.prototype._syntheticLevel = function () {
+    var self = this;
+    setInterval(function () {
+      var lvl = (self.speaking || self.manual)
+        ? 0.25 + 0.45 * Math.abs(Math.sin(Date.now() / 130))
+        : 0.04;
+      self.onLevel(lvl);
+    }, 80);
   };
 
   /* ---------- keyboard fallback ---------- */

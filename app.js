@@ -58,6 +58,7 @@
         onMode: (m) => setMode(m),
         onState: (s) => {
           if (s.mic === true) setMic("on");
+          if (s.recognition === false && !s.denied) setMic("norec");
           if (s.denied) setMic("denied");
         },
         onLevel: (lvl) => {
@@ -96,6 +97,10 @@
         mic === 'denied' && h('div', { className: 'cta-hint' },
           'Geen microfoon — typ een letter op het toetsenbord.'
         )
+      ),
+
+      mic === 'norec' && h('div', { className: 'note' },
+        'Spraakherkenning werkt niet in deze browser — typ een letter op het toetsenbord.'
       ),
 
       h('div', { className: 'listening' + (mic === 'on' ? ' show' : '') },
