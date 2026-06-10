@@ -27,20 +27,24 @@
 
   // Dutch letter names as the recognizer tends to spell them.
   // "bee" must become b, not e — the recognizer returns words, so map
-  // whole words before falling back to single characters.
+  // whole words before falling back to single characters. Includes
+  // common misrecognitions: Dutch "cee" sounds like "zee" to Google.
   var NAME_MAP = {
-    aa: "a", ah: "a", bee: "b", be: "b", cee: "c", see: "c", dee: "d", de: "d",
-    ee: "e", eh: "e", ef: "f", gee: "g", ge: "g", ha: "h", haa: "h", ie: "i",
-    jee: "j", je: "j", ka: "k", kaa: "k", el: "l", em: "m", en: "n", oo: "o",
-    oh: "o", pee: "p", pe: "p", ku: "q", kuu: "q", er: "r", es: "s", tee: "t",
+    aa: "a", ah: "a", bee: "b", be: "b", bij: "b", cee: "c", see: "c",
+    zee: "c", dee: "d", de: "d", ee: "e", eh: "e", he: "e", ef: "f",
+    gee: "g", ge: "g", ha: "h", haa: "h", ie: "i", jee: "j", je: "j",
+    ka: "k", kaa: "k", el: "l", em: "m", en: "n", oo: "o", oh: "o",
+    pee: "p", pe: "p", ku: "q", kuu: "q", er: "r", es: "s", tee: "t",
     thee: "t", te: "t", uu: "u", vee: "v", ve: "v", wee: "w", we: "w",
-    iks: "x", ex: "x", ypsilon: "y", zet: "z", hm: "m", hmm: "m", mmm: "m"
+    iks: "x", ex: "x", ypsilon: "y", zet: "z", zed: "z",
+    hm: "m", hmm: "m"
   };
-  function letterFrom(transcript) {
+  function wordsOf(transcript) {
     var t = stripDiacritics(String(transcript || "").toLowerCase());
-    var words = t.match(/[a-z]+/g);
-    if (!words || !words.length) return null;
-    var w = words[words.length - 1];
+    return t.match(/[a-z]+/g) || [];
+  }
+  // strict resolution: only words that clearly mean one letter
+  function resolveWord(w) {
     if (NAME_MAP[w]) return NAME_MAP[w];
     if (w.length === 1) return w;
     var same = true;
@@ -48,7 +52,36 @@
       if (w[i] !== w[0]) { same = false; break; }
     }
     if (same) return w[0]; // "aaa" → a
+    return null;
+  }
+  function letterStrict(transcript) {
+    var ws = wordsOf(transcript);
+    for (var i = ws.length - 1; i >= 0; i--) {
+      var c = resolveWord(ws[i]);
+      if (c) return c;
+    }
+    return null;
+  }
+  function letterFrom(transcript) {
+    var c = letterStrict(transcript);
+    if (c) return c;
+    var ws = wordsOf(transcript);
+    if (!ws.length) return null;
+    var w = ws[ws.length - 1];
     return w[w.length - 1];
+  }
+  // how many times the letter was actually heard in the transcript —
+  // "dee dee" → 2, a held "mmmm" → one word, counted by its length
+  function countFor(transcript, c) {
+    var n = 0;
+    var ws = wordsOf(transcript);
+    for (var i = 0; i < ws.length; i++) {
+      if (resolveWord(ws[i]) === c) {
+        n += (!NAME_MAP[ws[i]] && ws[i].length > 1 && ws[i][0] === c)
+          ? Math.min(8, ws[i].length) : 1;
+      }
+    }
+    return n || 1;
   }
 
   /* ---------- The tape of giant letters ---------- */
@@ -160,9 +193,6 @@
     this.lastEmit = 0;
     this.repeatTimer = null;
     this.burstTimer = null;
-    this.speechStartT = 0;
-    this.lastSoundEnd = 0;
-    this.lastSoundDur = 0;
     this.running = false;
     this.micOn = false;
     this.mode = "prompt";
@@ -213,16 +243,13 @@
     this.speaking = now;
     if (now) {
       this._stopBurst();
-      this.speechStartT = Date.now();
       if (this.currentLetter) this._startRepeat();
     } else {
-      this.lastSoundEnd = Date.now();
-      this.lastSoundDur = this.lastSoundEnd - this.speechStartT;
       this._stopRepeat();
     }
   };
 
-  Controller.prototype.setLetter = function (c) {
+  Controller.prototype.setLetter = function (c, burstN) {
     if (!c) return;
     var changed = c !== this.currentLetter;
     this.currentLetter = c;
@@ -231,13 +258,13 @@
       else if (changed) this.emit();
       return;
     }
-    // Recognition often resolves a short sound only after it ends —
-    // replay the held sound as a quick burst of letters, sized to how
-    // long the sound lasted.
-    if (this.lastSoundEnd && Date.now() - this.lastSoundEnd < 2500) {
-      var cfg = this.getConfig();
-      var n = Math.max(1, Math.min(8, Math.round(this.lastSoundDur / cfg.repeatMs)));
-      this._burst(n, cfg.repeatMs);
+    // A final result after the sound ended: if the sound produced no
+    // letters while it was live (no interim results on this platform),
+    // replay it as a burst sized by what was actually heard — never by
+    // elapsed time, which overcounts when recognition needed several
+    // attempts to understand the sound.
+    if (burstN && Date.now() - this.lastEmit > this.getConfig().repeatMs * 1.5) {
+      this._burst(Math.min(8, Math.max(1, burstN)), this.getConfig().repeatMs);
     }
   };
 
@@ -344,7 +371,7 @@
     rec.lang = "nl-NL";
     rec.continuous = true;
     rec.interimResults = true;
-    rec.maxAlternatives = 1;
+    rec.maxAlternatives = 3;
     if (driveSpeaking) {
       rec.onspeechstart = function () { self._onSpeakingChange(true); };
       rec.onspeechend = function () { self._onSpeakingChange(false); };
@@ -358,8 +385,15 @@
       // a final result is often delivered after the sound ended and
       // should go through the burst path instead
       if (driveSpeaking && !res.isFinal) self._pokeSpeaking();
-      var c = letterFrom(res[0].transcript);
-      if (c) self.setLetter(c);
+      // prefer the alternative that clearly names a letter — Google's
+      // first guess for a letter sound is often a lookalike word
+      var c = null, t = res[0].transcript;
+      for (var i = 0; i < res.length; i++) {
+        var s = letterStrict(res[i].transcript);
+        if (s) { c = s; t = res[i].transcript; break; }
+      }
+      if (!c) c = letterFrom(t);
+      if (c) self.setLetter(c, res.isFinal ? countFor(t, c) : 0);
     };
     rec.onerror = function (e) {
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
