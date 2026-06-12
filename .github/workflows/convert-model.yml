@@ -4,6 +4,11 @@
 #
 # Run it once by hand: GitHub → Actions → convert-model → Run workflow.
 # Takes ~15 minutes. Afterwards the "Klankmodus" toggle in the app works.
+#
+# Note: exports with torch.onnx.export directly instead of optimum-cli —
+# this model's phoneme tokenizer needs espeak installed, and loading it
+# (which optimum does) fails without it. We never need the tokenizer:
+# the app maps IPA tokens to letters itself, so we only fetch vocab.json.
 name: convert-model
 
 on:
@@ -22,29 +27,72 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install tooling (CPU-only torch)
+      - name: Install tooling (pinned, CPU-only torch)
         run: |
-          pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
-          pip install --quiet "optimum[exporters]" onnx onnxruntime transformers
+          pip install --quiet torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install --quiet transformers==4.46.3 onnx==1.17.0 onnxruntime==1.20.1 huggingface_hub
 
-      - name: Export to ONNX
+      - name: Export to ONNX (direct, no tokenizer)
         run: |
-          optimum-cli export onnx \
-            --model facebook/wav2vec2-xlsr-53-espeak-cv-ft \
-            --task automatic-speech-recognition \
-            export/
+          python - <<'EOF'
+          import os, torch
+          from transformers import Wav2Vec2ForCTC
+          os.makedirs("export", exist_ok=True)
+          model = Wav2Vec2ForCTC.from_pretrained(
+              "facebook/wav2vec2-xlsr-53-espeak-cv-ft", return_dict=False)
+          model.eval()
+          x = torch.zeros(1, 16000)
+          torch.onnx.export(
+              model, x, "export/model.onnx",
+              input_names=["input_values"], output_names=["logits"],
+              dynamic_axes={"input_values": {0: "batch", 1: "samples"},
+                            "logits": {0: "batch", 1: "frames"}},
+              opset_version=14)
+          print("export OK:", os.path.getsize("export/model.onnx") / 1e6, "MB")
+          EOF
 
-      - name: Quantize, split and build manifest
+      - name: Fetch vocab and config
+        run: |
+          python - <<'EOF'
+          import shutil
+          from huggingface_hub import hf_hub_download
+          for f in ["vocab.json", "config.json"]:
+              shutil.copy(hf_hub_download(
+                  "facebook/wav2vec2-xlsr-53-espeak-cv-ft", f), "export/" + f)
+          print("vocab/config OK")
+          EOF
+
+      - name: Quantize to int8
+        run: |
+          python - <<'EOF'
+          import os
+          from onnxruntime.quantization import quantize_dynamic, QuantType
+          quantize_dynamic("export/model.onnx", "model_q8.onnx",
+                           weight_type=QuantType.QInt8)
+          print("quantized:", os.path.getsize("model_q8.onnx") / 1e6, "MB")
+          EOF
+
+      - name: Smoke-test the quantized model
+        run: |
+          python - <<'EOF'
+          import json
+          import numpy as np
+          import onnxruntime as ort
+          s = ort.InferenceSession("model_q8.onnx")
+          out = s.run(None, {"input_values": np.zeros((1, 16000), np.float32)})[0]
+          vocab = json.load(open("export/vocab.json"))
+          print("logits shape:", out.shape, "vocab size:", len(vocab))
+          assert out.ndim == 3 and out.shape[1] > 0, out.shape
+          assert out.shape[2] >= len(vocab), (out.shape, len(vocab))
+          print("smoke test OK")
+          EOF
+
+      - name: Split and build manifest
         run: |
           python - <<'EOF'
           import json, math, os
-          from onnxruntime.quantization import quantize_dynamic, QuantType
-
           os.makedirs("model", exist_ok=True)
-          quantize_dynamic("export/model.onnx", "model_q8.onnx",
-                           weight_type=QuantType.QInt8)
 
-          # vocab: token->id in export/vocab.json; invert to id->token list
           with open("export/vocab.json") as f:
               tok2id = json.load(f)
           id2tok = [None] * (max(tok2id.values()) + 1)
@@ -66,7 +114,7 @@ jobs:
           with open("model/manifest.json", "w") as f:
               json.dump({"parts": parts, "totalBytes": size,
                          "vocab": id2tok, "blankId": blank_id}, f)
-          print(f"quantized size: {size/1e6:.0f} MB in {len(parts)} parts")
+          print(f"{size/1e6:.0f} MB in {len(parts)} parts")
           EOF
 
       - name: Commit model chunks
