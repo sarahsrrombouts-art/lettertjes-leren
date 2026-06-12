@@ -116,6 +116,10 @@
         'Klankmodel kon niet laden — zet de klankmodus uit om de gewone herkenning te gebruiken.'
       ),
 
+      h('div', { className: 'thinking' + (phon && phon.state === 'thinking' ? ' show' : '') },
+        h('i'), h('i'), h('i')
+      ),
+
       h('div', { className: 'listening' + (mic === 'on' && (!phon || phon.state === 'ready' || phon.state === 'thinking' || phon.state === 'loading') ? ' show' : '') },
         h('span', { className: 'eq' },
           ...[0, 1, 2, 3, 4].map((i) =>
@@ -125,7 +129,7 @@
         h('span', null,
           phon && phon.state === 'loading'
             ? 'Klankmodel laden… ' + Math.round((phon.progress || 0) * 100) + '%'
-            : phon && phon.state === 'thinking' ? 'Hmm…' : 'Ik luister…')
+            : phon && phon.state === 'thinking' ? 'Denken…' : 'Ik luister…')
       ),
 
       h(TweaksPanel, null,

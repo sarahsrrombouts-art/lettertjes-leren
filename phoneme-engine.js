@@ -17,7 +17,7 @@
 
   var SAMPLE_RATE = 16000;
   var MAX_SEGMENT_S = 2.0;   // cap per-utterance audio fed to the model
-  var VAD_THRESH = 0.045;    // same RMS gate as the meter in engine.js
+  var VAD_THRESH = 0.02;     // low enough to catch soft sibilants (sss)
   var VAD_HANG_MS = 350;     // keep recording this long after sound stops
   var PRE_ROLL_S = 0.2;      // audio kept from just before the sound began
 
@@ -211,6 +211,7 @@
     var segment = [];
     var segmentSamples = 0;
     var voiced = false;
+    var skipRest = false;
     var lastVoiceT = 0;
 
     proc.onaudioprocess = function (e) {
@@ -245,8 +246,16 @@
         if (ended || segmentSamples >= maxLen) {
           var seg = segment; var segN = segmentSamples;
           segment = []; segmentSamples = 0;
-          if (ended) { voiced = false; self.onSpeaking(false); }
-          self._infer(seg, segN, rate);
+          if (!skipRest) self._infer(seg, segN, rate);
+          if (ended) {
+            voiced = false;
+            skipRest = false;
+            self.onSpeaking(false);
+          } else {
+            // a long hold: judge only the first chunk — the continuation
+            // has no onset and decodes to garbage
+            skipRest = true;
+          }
         }
       }
     };
@@ -279,7 +288,17 @@
       var letters = lettersFromIds(ids, self.id2token);
       self.busy = false;
       self.onStatus({ state: "ready" });
-      if (letters.length) self.onLetters(letters, audio.length / SAMPLE_RATE);
+      var durS = audio.length / SAMPLE_RATE;
+      // saying "b" really says "bù" — the release vowel is the mouth
+      // opening, not a letter the child meant; drop it on short sounds
+      var VOWELS = { a: 1, e: 1, i: 1, o: 1, u: 1 };
+      if (letters.length === 2 && durS < 0.9 &&
+          !VOWELS[letters[0]] && VOWELS[letters[1]]) {
+        letters = [letters[0]];
+      }
+      // the VAD hangover isn't part of the held sound — don't let it
+      // inflate how many letters a short sound produces
+      if (letters.length) self.onLetters(letters, Math.max(0.25, durS - 0.35));
     }).catch(function () {
       self.busy = false;
       self.onStatus({ state: "ready" });
