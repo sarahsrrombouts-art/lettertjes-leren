@@ -81,7 +81,8 @@
   }
 
   function TweaksPanel({ title = 'Tweaks', children }) {
-    const [open, setOpen] = useState(false);
+    const [open, setOpen] = useState(
+      new URLSearchParams(window.location.search).get('tweaks') === '1');
     const dragRef = useRef(null);
     const offsetRef = useRef({ x: 16, y: 16 });
     const PAD = 16;

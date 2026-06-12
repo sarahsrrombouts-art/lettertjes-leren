@@ -7,6 +7,9 @@
   const CASE_MAP = { "ABC": "upper", "abc": "lower", "Aa": "both" };
   const COLOR_MAP = { "Elke letter": "multi", "Oranje": "orange", "Inkt": "ink" };
 
+  // URL flags: ?klank=1 enables phoneme mode, ?tweaks=1 opens the panel
+  const URL_FLAGS = new URLSearchParams(window.location.search);
+
   const TWEAK_DEFAULTS = {
     "letterCase": "ABC",
     "colors": "Elke letter",
@@ -15,7 +18,7 @@
     "letterSize": 42,
     "silence": 3,
     "tempo": 220,
-    "klankmodus": false
+    "klankmodus": URL_FLAGS.get("klank") === "1"
   };
 
   function MicIcon() {
