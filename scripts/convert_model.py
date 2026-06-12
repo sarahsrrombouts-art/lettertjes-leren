@@ -65,9 +65,13 @@ def main():
         shutil.copy(hf_hub_download(MODEL_ID, f), "export/" + f)
 
     print("== quantizing ==", flush=True)
+    # MatMul only: quantizing Conv produces ConvInteger nodes, which
+    # neither onnxruntime CPU nor onnxruntime-web WASM implements. The
+    # conv feature extractor is ~1.5% of the weights, so fp32 is fine.
     from onnxruntime.quantization import quantize_dynamic, QuantType
     quantize_dynamic("export/model.onnx", "model_q8.onnx",
-                     weight_type=QuantType.QInt8)
+                     weight_type=QuantType.QInt8,
+                     op_types_to_quantize=["MatMul"])
     print("quantized:", os.path.getsize("model_q8.onnx") / 1e6, "MB")
 
     print("== smoke test ==", flush=True)
