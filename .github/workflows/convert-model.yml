@@ -1,21 +1,25 @@
-# Converts facebook/wav2vec2-xlsr-53-espeak-cv-ft to a quantized ONNX
-# model the app can run in the browser, split into <100MB chunks
-# (GitHub's file size limit), and commits them under model/.
+# Builds the browser-ready phoneme model (see scripts/convert_model.py)
+# and commits the chunks under model/.
 #
-# Run it once by hand: GitHub → Actions → convert-model → Run workflow.
-# Takes ~15 minutes. Afterwards the "Klankmodus" toggle in the app works.
-#
-# Note: exports with torch.onnx.export directly instead of optimum-cli —
-# this model's phoneme tokenizer needs espeak installed, and loading it
-# (which optimum does) fails without it. We never need the tokenizer:
-# the app maps IPA tokens to letters itself, so we only fetch vocab.json.
+# Triggers: manual (Run workflow) or automatically when the conversion
+# script/workflow changes. On failure it commits buildlog.txt so the
+# error is readable without access to the Actions log viewer.
 name: convert-model
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/convert_model.py"
+      - ".github/workflows/convert-model.yml"
 
 permissions:
   contents: write
+
+concurrency:
+  group: convert-model
+  cancel-in-progress: true
 
 jobs:
   convert:
@@ -30,92 +34,12 @@ jobs:
       - name: Install tooling (pinned, CPU-only torch)
         run: |
           pip install --quiet torch==2.4.1 --index-url https://download.pytorch.org/whl/cpu
-          pip install --quiet transformers==4.46.3 onnx==1.17.0 onnxruntime==1.20.1 huggingface_hub
+          pip install --quiet transformers==4.46.3 onnx==1.17.0 onnxruntime==1.20.1 huggingface_hub numpy
 
-      - name: Export to ONNX (direct, no tokenizer)
+      - name: Convert model
         run: |
-          python - <<'EOF'
-          import os, torch
-          from transformers import Wav2Vec2ForCTC
-          os.makedirs("export", exist_ok=True)
-          model = Wav2Vec2ForCTC.from_pretrained(
-              "facebook/wav2vec2-xlsr-53-espeak-cv-ft", return_dict=False)
-          model.eval()
-          x = torch.zeros(1, 16000)
-          torch.onnx.export(
-              model, x, "export/model.onnx",
-              input_names=["input_values"], output_names=["logits"],
-              dynamic_axes={"input_values": {0: "batch", 1: "samples"},
-                            "logits": {0: "batch", 1: "frames"}},
-              opset_version=14)
-          print("export OK:", os.path.getsize("export/model.onnx") / 1e6, "MB")
-          EOF
-
-      - name: Fetch vocab and config
-        run: |
-          python - <<'EOF'
-          import shutil
-          from huggingface_hub import hf_hub_download
-          for f in ["vocab.json", "config.json"]:
-              shutil.copy(hf_hub_download(
-                  "facebook/wav2vec2-xlsr-53-espeak-cv-ft", f), "export/" + f)
-          print("vocab/config OK")
-          EOF
-
-      - name: Quantize to int8
-        run: |
-          python - <<'EOF'
-          import os
-          from onnxruntime.quantization import quantize_dynamic, QuantType
-          quantize_dynamic("export/model.onnx", "model_q8.onnx",
-                           weight_type=QuantType.QInt8)
-          print("quantized:", os.path.getsize("model_q8.onnx") / 1e6, "MB")
-          EOF
-
-      - name: Smoke-test the quantized model
-        run: |
-          python - <<'EOF'
-          import json
-          import numpy as np
-          import onnxruntime as ort
-          s = ort.InferenceSession("model_q8.onnx")
-          out = s.run(None, {"input_values": np.zeros((1, 16000), np.float32)})[0]
-          vocab = json.load(open("export/vocab.json"))
-          print("logits shape:", out.shape, "vocab size:", len(vocab))
-          assert out.ndim == 3 and out.shape[1] > 0, out.shape
-          assert out.shape[2] >= len(vocab), (out.shape, len(vocab))
-          print("smoke test OK")
-          EOF
-
-      - name: Split and build manifest
-        run: |
-          python - <<'EOF'
-          import json, math, os
-          os.makedirs("model", exist_ok=True)
-
-          with open("export/vocab.json") as f:
-              tok2id = json.load(f)
-          id2tok = [None] * (max(tok2id.values()) + 1)
-          for tok, i in tok2id.items():
-              id2tok[i] = tok
-          with open("export/config.json") as f:
-              blank_id = json.load(f).get("pad_token_id", 0)
-
-          CHUNK = 90 * 1024 * 1024
-          size = os.path.getsize("model_q8.onnx")
-          parts = []
-          with open("model_q8.onnx", "rb") as f:
-              for n in range(math.ceil(size / CHUNK)):
-                  name = f"model.onnx.part{n:02d}"
-                  with open(f"model/{name}", "wb") as out:
-                      out.write(f.read(CHUNK))
-                  parts.append(name)
-
-          with open("model/manifest.json", "w") as f:
-              json.dump({"parts": parts, "totalBytes": size,
-                         "vocab": id2tok, "blankId": blank_id}, f)
-          print(f"{size/1e6:.0f} MB in {len(parts)} parts")
-          EOF
+          set -o pipefail
+          python scripts/convert_model.py 2>&1 | tee buildlog.txt
 
       - name: Commit model chunks
         run: |
@@ -123,4 +47,15 @@ jobs:
           git config user.email "actions@github.com"
           git add model/
           git commit -m "Add quantized wav2vec2 phoneme model (built by convert-model action)"
+          git pull --rebase origin main
+          git push
+
+      - name: Save build log on failure
+        if: failure()
+        run: |
+          git config user.name "convert-model action"
+          git config user.email "actions@github.com"
+          git add -f buildlog.txt
+          git commit -m "convert-model failed: see buildlog.txt"
+          git pull --rebase origin main
           git push
