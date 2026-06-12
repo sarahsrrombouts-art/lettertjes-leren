@@ -69,12 +69,25 @@
     return ids;
   }
 
+  // the multilingual vocab has variants the base map misses: tone
+  // numbers (ɑ5), length marks, diphthongs — strip and retry
+  function letterForToken(tok) {
+    if (IPA_MAP[tok]) return IPA_MAP[tok];
+    var base = tok.replace(/[0-9]+$/, "");
+    if (IPA_MAP[base]) return IPA_MAP[base];
+    base = base.replace(/ː$/, "");
+    if (IPA_MAP[base]) return IPA_MAP[base];
+    var first = base.charAt(0);
+    if (IPA_MAP[first]) return IPA_MAP[first];
+    return null;
+  }
+
   function lettersFromIds(ids, id2token) {
     var out = [];
     for (var i = 0; i < ids.length; i++) {
       var tok = id2token[ids[i]];
       if (!tok) continue;
-      var c = IPA_MAP[tok];
+      var c = letterForToken(tok);
       if (c) out.push(c);
     }
     return out;
@@ -163,7 +176,9 @@
       self.onStatus({ state: "loading", progress: p });
     }).then(function (m) {
       var ort = window.ort;
-      ort.env.wasm.wasmPaths = "vendor/ort/";
+      // absolute URL: the wasm loader resolves module specifiers, which
+      // fails on relative paths
+      ort.env.wasm.wasmPaths = new URL("vendor/ort/", window.location.href).href;
       ort.env.wasm.numThreads = 1; // GH Pages lacks cross-origin isolation
       self.id2token = m.vocab;
       self.blankId = m.blankId;
